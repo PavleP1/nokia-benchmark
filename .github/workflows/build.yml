@@ -1,0 +1,88 @@
+name: Build Phone Bench
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+      - name: Download toolchain
+        run: |
+          mkdir -p lib build/classes dist res
+          M=https://repo1.maven.org/maven2/org/microemu
+          curl -fL $M/microemu-cldc/2.0.4/microemu-cldc-2.0.4.jar -o lib/cldc.jar
+          curl -fL $M/microemu-midp/2.0.4/microemu-midp-2.0.4.jar -o lib/midp.jar
+          curl -fL https://github.com/Guardsquare/proguard/releases/download/v7.2.2/proguard-7.2.2.zip -o pg.zip
+          unzip -q pg.zip
+      - name: Make icon
+        run: |
+          python3 - <<'PY'
+          import zlib, struct, os
+          S, SS = 40, 4
+          def rr(x, y, x0, y0, x1, y1, r):
+              if x < x0 or x > x1 or y < y0 or y > y1:
+                  return False
+              cx = min(max(x, x0 + r), x1 - r)
+              cy = min(max(y, y0 + r), y1 - r)
+              return (x - cx) ** 2 + (y - cy) ** 2 <= r * r
+          BARS = [(7, 22, (48, 209, 88)), (14, 15, (255, 214, 10)), (21, 9, (255, 159, 10)), (28, 4, (255, 69, 58))]
+          def sample(x, y):
+              if not rr(x, y, 1, 1, 39, 39, 9):
+                  return None
+              t = (x + y) / 80.0
+              col = (int(24 + 24 * t), int(24 + 24 * t), int(30 + 36 * t))
+              for bx, by, c in BARS:
+                  if bx <= x <= bx + 5 and by <= y <= 34:
+                      col = c
+              return col
+          raw = bytearray()
+          for py in range(S):
+              raw.append(0)
+              for px in range(S):
+                  r = g = b = a = 0
+                  for sy in range(SS):
+                      for sx in range(SS):
+                          c = sample(px + (sx + 0.5) / SS, py + (sy + 0.5) / SS)
+                          if c:
+                              r += c[0]; g += c[1]; b += c[2]; a += 1
+                  n = SS * SS
+                  if a:
+                      raw += bytes((r // a, g // a, b // a, 255 * a // n))
+                  else:
+                      raw += bytes((0, 0, 0, 0))
+          def chunk(t, d):
+              c = struct.pack('>I', len(d)) + t + d
+              return c + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
+          png = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', S, S, 8, 6, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(bytes(raw), 9)) + chunk(b'IEND', b'')
+          os.makedirs('res', exist_ok=True)
+          open('res/icon.png', 'wb').write(png)
+          PY
+      - name: Compile
+        run: |
+          javac -source 1.3 -target 1.3 -classpath lib/midp.jar:lib/cldc.jar -d build/classes src/*.java
+          jar cf build/in.jar -C build/classes .
+      - name: Preverify with ProGuard
+        run: |
+          java -jar proguard-7.2.2/lib/proguard.jar -injars build/in.jar -outjars build/out.jar \
+            -libraryjars "$JAVA_HOME/jre/lib/rt.jar" \
+            -libraryjars lib/midp.jar -libraryjars lib/cldc.jar \
+            -microedition -dontobfuscate -dontoptimize -dontwarn -ignorewarnings \
+            -keep "public class PhoneBench"
+      - name: Package JAR + JAD
+        run: |
+          V="1.0.${GITHUB_RUN_NUMBER}"
+          mkdir pre && cd pre && unzip -q ../build/out.jar && rm -rf META-INF && cd ..
+          cp res/icon.png pre/icon.png
+          printf 'Manifest-Version: 1.0\nMIDlet-1: Phone Bench, /icon.png, PhoneBench\nMIDlet-Icon: /icon.png\nMIDlet-Name: Phone Bench\nMIDlet-Vendor: Me\nMIDlet-Version: %s\nMicroEdition-Configuration: CLDC-1.0\nMicroEdition-Profile: MIDP-2.0\n' "$V" > manifest.mf
+          jar cfm dist/PhoneBench.jar manifest.mf -C pre .
+          SIZE=$(stat -c%s dist/PhoneBench.jar)
+          { sed '1d' manifest.mf; echo "MIDlet-Jar-URL: PhoneBench.jar"; echo "MIDlet-Jar-Size: $SIZE" ; } > dist/PhoneBench.jad
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PhoneBench
+          path: dist/
