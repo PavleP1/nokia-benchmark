@@ -64,15 +64,15 @@ jobs:
           PY
       - name: Compile
         run: |
-          javac -source 1.3 -target 1.3 -classpath lib/midp.jar:lib/cldc.jar -d build/classes src/*.java
+          javac -g:none -source 1.3 -target 1.3 -classpath lib/midp.jar:lib/cldc.jar -d build/classes src/*.java
           jar cf build/in.jar -C build/classes .
       - name: Preverify with ProGuard
         run: |
           java -jar proguard-7.2.2/lib/proguard.jar -injars build/in.jar -outjars build/out.jar \
             -libraryjars "$JAVA_HOME/jre/lib/rt.jar" \
             -libraryjars lib/midp.jar -libraryjars lib/cldc.jar \
-            -microedition -dontobfuscate -dontoptimize -dontwarn -ignorewarnings \
-            -keep "public class PhoneBench"
+            -microedition -dontobfuscate -dontoptimize -dontshrink -dontwarn -ignorewarnings \
+            -keep "public class * extends javax.microedition.midlet.MIDlet"
       - name: Package JAR + JAD
         run: |
           V="1.0.${GITHUB_RUN_NUMBER}"
@@ -81,7 +81,12 @@ jobs:
           printf 'Manifest-Version: 1.0\nMIDlet-1: Phone Bench, /icon.png, PhoneBench\nMIDlet-Icon: /icon.png\nMIDlet-Name: Phone Bench\nMIDlet-Vendor: Me\nMIDlet-Version: %s\nMicroEdition-Configuration: CLDC-1.0\nMicroEdition-Profile: MIDP-2.0\n' "$V" > manifest.mf
           jar cfm dist/PhoneBench.jar manifest.mf -C pre .
           SIZE=$(stat -c%s dist/PhoneBench.jar)
-          { sed '1d' manifest.mf; echo "MIDlet-Jar-URL: PhoneBench.jar"; echo "MIDlet-Jar-Size: $SIZE" ; } > dist/PhoneBench.jad
+          { sed '1d' manifest.mf; echo "MIDlet-Jar-URL: PhoneBench.jar"; echo "MIDlet-Jar-Size: $SIZE"; } > dist/PhoneBench.jad
+      - name: Show jar details
+        run: |
+          ls -l dist
+          unzip -l dist/PhoneBench.jar
+          unzip -p dist/PhoneBench.jar META-INF/MANIFEST.MF
       - uses: actions/upload-artifact@v4
         with:
           name: PhoneBench
