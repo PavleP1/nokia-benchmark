@@ -4,8 +4,8 @@ import java.io.*;
 import java.util.Vector;
 
 final class BenchCanvas extends Canvas implements Runnable {
-    static final int MENU = 0, RUN = 1, STRESS = 2, SDONE = 3;
-    static final int DUR = 6000, ROWS = Tests.COUNT + 2;
+    static final int MENU = 0, RUN = 1, STRESS = 2, SDONE = 3, FIRE = 4, CHAOS = 5;
+    static final int DUR = 6000, ROWS = Tests.COUNT + 4;
     static final int TL = Graphics.TOP | Graphics.LEFT;
     static final int TC = Graphics.TOP | Graphics.HCENTER;
     static final int TR = Graphics.TOP | Graphics.RIGHT;
@@ -15,6 +15,8 @@ final class BenchCanvas extends Canvas implements Runnable {
     final Font fs = Font.getFont(Font.FACE_SYSTEM, Font.STYLE_PLAIN, Font.SIZE_SMALL);
     final Font fb = Font.getFont(Font.FACE_SYSTEM, Font.STYLE_BOLD, Font.SIZE_SMALL);
     final Font fh = Font.getFont(Font.FACE_SYSTEM, Font.STYLE_BOLD, Font.SIZE_MEDIUM);
+    final Fire fire = new Fire();
+    final Chaos chaos = new Chaos();
     volatile boolean running = true, stopReq;
     volatile int state;
     int w, h, headH, barH, sel, scroll, cur, frames;
@@ -48,6 +50,7 @@ final class BenchCanvas extends Canvas implements Runnable {
         if (exiting) running = false;
         if (state == RUN) abort();
         else if (state == STRESS) stopReq = true;
+        else if (state == CHAOS) { chaos.stopAll(); state = MENU; }
         save();
     }
 
@@ -226,13 +229,30 @@ final class BenchCanvas extends Canvas implements Runnable {
                     }
                 } else if (st == STRESS) {
                     stressStep(now);
+                } else if (st == FIRE) {
+                    fire.step();
+                    repaint();
+                    serviceRepaints();
+                    long dt = System.currentTimeMillis() - now;
+                    if (dt < 33) {
+                        try { Thread.sleep(33 - dt); } catch (InterruptedException e) {}
+                    }
+                } else if (st == CHAOS) {
+                    chaos.step(now);
+                    repaint();
+                    serviceRepaints();
+                    try { Thread.sleep(20); } catch (InterruptedException e) {}
                 } else {
                     try { Thread.sleep(80); } catch (InterruptedException e) {}
                 }
             } catch (OutOfMemoryError e) {
-                if (state == STRESS) endStress("Out of memory"); else abort();
+                if (state == STRESS) endStress("Out of memory");
+                else if (state == CHAOS) { chaos.stopAll(); state = MENU; note("Chaos: out of memory"); }
+                else abort();
             } catch (Throwable e) {
-                if (state == STRESS) endStress("Error"); else abort();
+                if (state == STRESS) endStress("Error");
+                else if (state == CHAOS) { chaos.stopAll(); state = MENU; }
+                else abort();
             }
         }
     }
@@ -244,6 +264,8 @@ final class BenchCanvas extends Canvas implements Runnable {
         if (state == RUN) paintRun(g);
         else if (state == STRESS) paintStress(g);
         else if (state == SDONE) paintDone(g);
+        else if (state == FIRE) paintFire(g);
+        else if (state == CHAOS) paintChaos(g);
         else paintMenu(g);
     }
 
@@ -283,13 +305,17 @@ final class BenchCanvas extends Canvas implements Runnable {
     String rowName(int r) {
         if (r == 0) return "Run all tests";
         if (r <= Tests.COUNT) return Tests.NAMES[r - 1];
-        return "Stress test";
+        if (r == Tests.COUNT + 1) return "Stress test";
+        if (r == Tests.COUNT + 2) return "Fire simulation";
+        return "Chaos mode";
     }
 
     String rowVal(int r) {
         if (r == 0) return total() > 0 ? total() + " pts" : "";
         if (r <= Tests.COUNT) return best[r - 1] > 0 ? fmt(r - 1, best[r - 1]) : "-";
-        return lastLevel > 0 ? "Lvl " + lastLevel : "-";
+        if (r == Tests.COUNT + 1) return lastLevel > 0 ? "Lvl " + lastLevel : "-";
+        if (r == Tests.COUNT + 2) return "live";
+        return "!";
     }
 
     void paintMenu(Graphics g) {
@@ -308,8 +334,9 @@ final class BenchCanvas extends Canvas implements Runnable {
                 g.setColor(ACC);
                 g.drawRoundRect(8, y, w - 17, rh - 5, 10, 10);
             }
-            g.setFont(r == 0 || r == ROWS - 1 ? fb : fs);
-            g.setColor(r == ROWS - 1 ? 0xFF9F0A : TXT);
+            int special = r - Tests.COUNT;
+            g.setFont(r == 0 || special > 0 ? fb : fs);
+            g.setColor(special == 1 ? 0xFF9F0A : special == 2 ? 0xFF6A00 : special == 3 ? 0xFF453A : TXT);
             g.drawString(rowName(r), 18, y + 4, TL);
             g.setFont(fs);
             g.setColor(SUB);
@@ -392,6 +419,93 @@ final class BenchCanvas extends Canvas implements Runnable {
         bar(g, "", "Any key", "Back");
     }
 
+    void paintFire(Graphics g) {
+        fire.paint(g);
+        if (fire.hud) {
+            String a = "FPS " + fire.fps + "  Fuel " + fire.fuel + "  Wind " + fire.wind;
+            String b = Fire.MODES[fire.mode] + "  L:mode *:embers #:quality";
+            g.setFont(fs);
+            g.setColor(0x000000);
+            g.drawString(a, 5, 3, TL);
+            g.drawString(b, 5, 3 + fs.getHeight(), TL);
+            g.setColor(0xFFFFFF);
+            g.drawString(a, 4, 2, TL);
+            g.drawString(b, 4, 2 + fs.getHeight(), TL);
+        }
+    }
+
+    void paintChaos(Graphics g) {
+        long now = System.currentTimeMillis();
+        int dt = chaos.lastPaint == 0 ? 0 : (int) (now - chaos.lastPaint);
+        chaos.lastPaint = now;
+        chaos.lastFrame = dt;
+        if (dt > chaos.maxFrame) chaos.maxFrame = dt;
+        chaos.block();
+        g.setColor(0x160A0A);
+        g.fillRect(0, 0, w, h);
+        int m = chaos.mode, lh = fs.getHeight() + 3;
+        if (m == Chaos.M_MENU) {
+            int rh = fb.getHeight() + fs.getHeight() + 14;
+            for (int i = 0; i < 4; i++) {
+                int y = headH + 10 + i * (rh + 8);
+                g.setColor(CARD);
+                g.fillRoundRect(10, y, w - 20, rh, 12, 12);
+                if (i == chaos.sel) { g.setColor(0xFF453A); g.drawRoundRect(10, y, w - 21, rh - 1, 12, 12); }
+                g.setFont(fb);
+                g.setColor(i == 3 ? 0xFF453A : TXT);
+                g.drawString(Chaos.NAMES[i], 20, y + 6, TL);
+                g.setFont(fs);
+                g.setColor(SUB);
+                g.drawString(Chaos.DESC[i], 20, y + 8 + fb.getHeight(), TL);
+            }
+            head(g, "Chaos mode", null);
+            bar(g, "Start", "", "Back");
+        } else if (m == Chaos.M_WARN) {
+            String[] t = {"WARNING", "Total crash can hang the", "phone until you press the", "red end key or remove", "the battery. It heats the", "phone. Save everything first.", "", "5 = start     Back = cancel"};
+            int y = headH + 14;
+            for (int i = 0; i < t.length; i++) {
+                g.setFont(i == 0 ? fb : fs);
+                g.setColor(i == 0 ? 0xFF453A : TXT);
+                g.drawString(t[i], 14, y, TL);
+                y += lh + 2;
+            }
+            head(g, "Total crash", null);
+            bar(g, "", "5 = start", "Back");
+        } else {
+            int tw = w - 30;
+            int p = (int) ((now / 4) % (2 * tw));
+            int bx = 15 + (p < tw ? p : 2 * tw - p);
+            int by = headH + 30;
+            g.setColor(0x3A3A3C);
+            g.drawLine(15, by + 6, w - 15, by + 6);
+            g.setColor(0xFF9F0A);
+            g.fillArc(bx - 6, by, 12, 12, 0, 360);
+            long free = Runtime.getRuntime().freeMemory() / 1024;
+            String[] s = {
+                Chaos.NAMES[m - Chaos.M_LAG],
+                "Frame " + chaos.lastFrame + "ms  worst " + chaos.maxFrame + "ms",
+                "Free " + free + "K  held " + chaos.heldKB + "K",
+                "Threads " + chaos.nb + "  Time " + ((now - chaos.start) / 1000) + "s"
+            };
+            int y = by + 26;
+            for (int i = 0; i < s.length; i++) {
+                g.setFont(i == 0 ? fb : fs);
+                g.setColor(i == 0 ? 0xFF453A : TXT);
+                g.drawString(s[i], 10, y, TL);
+                y += lh + 2;
+            }
+            y += 4;
+            g.setFont(fs);
+            g.setColor(SUB);
+            for (int i = 0; i < chaos.log.size(); i++) {
+                g.drawString((String) chaos.log.elementAt(i), 10, y, TL);
+                y += lh;
+            }
+            head(g, "Chaos mode", "RUN");
+            bar(g, "", "hold Stop to quit", "Stop");
+        }
+    }
+
     // ---------- input
     protected void keyPressed(int k) {
         int a = 0;
@@ -403,7 +517,9 @@ final class BenchCanvas extends Canvas implements Runnable {
             else if (a == FIRE || left) {
                 if (sel == 0) { runAll = true; startTest(0); }
                 else if (sel <= Tests.COUNT) { runAll = false; startTest(sel - 1); }
-                else startStress();
+                else if (sel == Tests.COUNT + 1) startStress();
+                else if (sel == Tests.COUNT + 2) { fire.init(w, h); state = FIRE; }
+                else { chaos.open(); state = CHAOS; }
             } else if (right || k == KEY_POUND) midlet.exit();
         } else if (state == RUN) {
             if (right || k == KEY_STAR || a == FIRE) abort();
@@ -411,14 +527,18 @@ final class BenchCanvas extends Canvas implements Runnable {
             if (right || a == FIRE) stopReq = true;
         } else if (state == SDONE) {
             state = MENU;
+        } else if (state == FIRE) {
+            if (fire.key(k, a, left, right)) state = MENU;
+        } else if (state == CHAOS) {
+            if (chaos.key(k, a, left, right)) state = MENU;
         }
         repaint();
     }
 
     protected void keyRepeated(int k) {
-        if (state != MENU) return;
+        if (state != MENU && state != FIRE) return;
         int a = 0;
         try { a = getGameAction(k); } catch (Exception e) {}
-        if (a == UP || a == DOWN) keyPressed(k);
+        if (a == UP || a == DOWN || a == LEFT || a == RIGHT) keyPressed(k);
     }
 }
